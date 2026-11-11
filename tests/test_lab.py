@@ -69,6 +69,34 @@ class LoopTests(unittest.TestCase):
         truncated = final('partial')
         truncated['finish'] = 'length'
         self.assertEqual(run_agent('x', FakeProvider([truncated]), StatusTools())['status'], 'error')
+    def test_provider_error_is_reported_without_retry(self):
+        class FailingProvider:
+            def __init__(self):
+                self.calls = 0
+            def complete(self, messages, schemas):
+                self.calls += 1
+                raise RuntimeError('Provider trả HTTP 429; kiểm tra quota.')
+
+        provider = FailingProvider()
+        result = run_agent('kiểm tra', provider, StatusTools())
+        self.assertEqual(result['status'], 'error')
+        self.assertIn('HTTP 429', result['error'])
+        self.assertEqual(provider.calls, 1)
+        self.assertEqual(result['trace'][-1]['event'], 'error')
+    def test_tool_timeout_is_returned_to_model(self):
+        class TimeoutTools:
+            def execute(self, name, arguments):
+                raise TimeoutError('status request timed out')
+
+        fake = FakeProvider([
+            tool_call('timeout-1', 'get_status', '{"provider":"github"}'),
+            final('Không thể kiểm tra trạng thái do timeout.'),
+        ])
+        result = run_agent('kiểm tra', fake, TimeoutTools())
+        observation = json.loads(fake.histories[1][-1]['content'])
+        self.assertEqual(result['status'], 'completed')
+        self.assertEqual(observation['error'], 'TimeoutError')
+        self.assertEqual(result['trace'][1]['result']['error'], 'TimeoutError')
     def test_multiple_tool_calls(self):
         a = tool_call('a', 'get_status', '{"provider":"github"}')
         b = tool_call('b', 'get_status', '{"provider":"cloudflare"}')
